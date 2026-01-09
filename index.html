@@ -9,9 +9,31 @@
 <body>
   <div id="root"></div>
   
+  <!-- Firebase -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+  
+  <!-- React -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <script>
+    // Firebase Configuration - REPLACE THESE VALUES WITH YOURS!
+    const firebaseConfig = {
+      apiKey: "AIzaSyDC1uJuqHcny_7rc34Q4HTqKeLM8itH-9w",
+      authDomain: "daily-tasks-8cde1.firebaseapp.com",
+      databaseURL: "https://daily-tasks-8cde1-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "daily-tasks-8cde1",
+      storageBucket: "daily-tasks-8cde1.firebasestorage.app",
+      messagingSenderId: "705178864224",
+      appId: "1:705178864224:web:56fe2ae4ee121b532b9105"
+    };
+    
+    // Initialize Firebase
+    firebase.initializeApp(firebaseConfig);
+    const database = firebase.database();
+  </script>
   
   <script type="text/babel">
     const { useState, useEffect } = React;
@@ -47,90 +69,62 @@
 
       const [completedTasks, setCompletedTasks] = useState({});
       const [loading, setLoading] = useState(true);
-      const [error, setError] = useState(null);
+      const [connected, setConnected] = useState(false);
 
       const getTodayDate = () => {
         const today = new Date();
         return today.toISOString().split('T')[0];
       };
 
-      // Load data from shared storage
-      const loadData = async () => {
-        try {
-          const today = getTodayDate();
-          
-          // Check if storage API exists
-          if (!window.storage) {
-            throw new Error('Storage not available');
-          }
-          
-          // Load last reset date
-          const dateResult = await window.storage.get('task-tracker-date', true);
-          const savedDate = dateResult?.value || '';
-          
-          // If it's a new day, reset tasks
-          if (savedDate !== today) {
-            await window.storage.set('task-tracker-date', today, true);
-            await window.storage.set('task-tracker-tasks', JSON.stringify({}), true);
-            setCompletedTasks({});
-          } else {
-            // Load saved tasks
-            const tasksResult = await window.storage.get('task-tracker-tasks', true);
-            if (tasksResult?.value) {
-              setCompletedTasks(JSON.parse(tasksResult.value));
-            }
-          }
-          setError(null);
-        } catch (err) {
-          console.log('Storage error, using localStorage fallback:', err);
-          setError('Using local mode - tasks won\'t sync between phones');
-          
-          // Fallback to localStorage
-          const today = getTodayDate();
-          const savedDate = localStorage.getItem('task-date');
-          
-          if (savedDate !== today) {
-            localStorage.setItem('task-date', today);
-            localStorage.setItem('task-data', JSON.stringify({}));
-            setCompletedTasks({});
-          } else {
-            const saved = localStorage.getItem('task-data');
-            if (saved) {
-              setCompletedTasks(JSON.parse(saved));
-            }
-          }
-        }
-        setLoading(false);
-      };
-
-      // Initial load and polling
       useEffect(() => {
-        loadData();
-        
-        // Poll for updates every 3 seconds
-        const interval = setInterval(loadData, 3000);
-        
-        return () => clearInterval(interval);
+        const today = getTodayDate();
+        const tasksRef = firebase.database().ref('dailyTasks');
+        const dateRef = firebase.database().ref('lastResetDate');
+
+        // Check and reset if new day
+        dateRef.once('value', (snapshot) => {
+          const lastDate = snapshot.val();
+          
+          if (lastDate !== today) {
+            // New day - reset tasks
+            dateRef.set(today);
+            tasksRef.set({});
+          }
+        });
+
+        // Listen for real-time updates
+        tasksRef.on('value', (snapshot) => {
+          const data = snapshot.val() || {};
+          setCompletedTasks(data);
+          setLoading(false);
+          setConnected(true);
+        });
+
+        // Check for midnight to reset
+        const checkMidnight = setInterval(() => {
+          const now = getTodayDate();
+          dateRef.once('value', (snapshot) => {
+            if (snapshot.val() !== now) {
+              dateRef.set(now);
+              tasksRef.set({});
+            }
+          });
+        }, 60000); // Check every minute
+
+        return () => {
+          tasksRef.off();
+          clearInterval(checkMidnight);
+        };
       }, []);
 
-      const toggleTask = async (taskIndex) => {
+      const toggleTask = (taskIndex) => {
         const newCompletedTasks = {
           ...completedTasks,
           [taskIndex]: !completedTasks[taskIndex]
         };
         
-        setCompletedTasks(newCompletedTasks);
-        
-        try {
-          if (window.storage) {
-            await window.storage.set('task-tracker-tasks', JSON.stringify(newCompletedTasks), true);
-          } else {
-            localStorage.setItem('task-data', JSON.stringify(newCompletedTasks));
-          }
-        } catch (error) {
-          console.error('Error saving task:', error);
-          localStorage.setItem('task-data', JSON.stringify(newCompletedTasks));
-        }
+        // Update Firebase - will automatically sync to all devices
+        firebase.database().ref('dailyTasks').set(newCompletedTasks);
       };
 
       const completedCount = Object.values(completedTasks).filter(Boolean).length;
@@ -149,16 +143,18 @@
         <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
           <div className="max-w-2xl mx-auto">
             <div className="bg-white rounded-lg shadow-lg p-6 mb-4">
-              <h1 className="text-3xl font-bold text-gray-800 mb-2">Daily Tasks</h1>
+              <div className="flex justify-between items-center mb-2">
+                <h1 className="text-3xl font-bold text-gray-800">Daily Tasks</h1>
+                {connected && (
+                  <div className="flex items-center gap-2 text-green-600 text-sm">
+                    <div className="w-2 h-2 bg-green-600 rounded-full animate-pulse"></div>
+                    Live
+                  </div>
+                )}
+              </div>
               <p className="text-gray-600 mb-4">
                 {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
               </p>
-              
-              {error && (
-                <div className="mb-4 p-3 bg-yellow-100 border border-yellow-400 rounded-lg text-yellow-800 text-sm">
-                  ⚠️ {error}
-                </div>
-              )}
               
               <div className="mb-2">
                 <div className="flex justify-between text-sm text-gray-600 mb-1">
@@ -221,7 +217,7 @@
                 Tasks automatically reset at midnight
               </p>
               <p className="mt-2 text-xs text-gray-500">
-                {!error ? '✨ Real-time sync enabled!' : '📱 Tracking locally on this device'}
+                ✨ Real-time sync: Updates instantly on both phones!
               </p>
             </div>
           </div>
