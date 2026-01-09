@@ -28,10 +28,6 @@
       </svg>
     );
 
-    // Simple backend using JSONBin.io for shared data storage
-    const API_KEY = '$2b$10$kxGv8qv0hX7Z8ZQhX5Z8ZOhX5Z8ZOhX5Z8ZOhX5Z8ZOhX5Z8ZOhX5';
-    const BIN_ID = '679f8e9c6197bb3a3c1a5f3e'; // Public bin for demo
-
     const DailyTaskTracker = () => {
       const tasks = [
         'Breakfast',
@@ -51,70 +47,68 @@
 
       const [completedTasks, setCompletedTasks] = useState({});
       const [loading, setLoading] = useState(true);
-      const [lastUpdate, setLastUpdate] = useState(0);
+      const [error, setError] = useState(null);
 
       const getTodayDate = () => {
         const today = new Date();
         return today.toISOString().split('T')[0];
       };
 
-      // Load data from server
-      const loadFromServer = async () => {
+      // Load data from shared storage
+      const loadData = async () => {
         try {
-          const response = await fetch('https://api.jsonbin.io/v3/b/' + BIN_ID + '/latest', {
-            headers: {
-              'X-Master-Key': API_KEY
-            }
-          });
+          const today = getTodayDate();
           
-          if (response.ok) {
-            const data = await response.json();
-            const serverData = data.record;
-            
-            const today = getTodayDate();
-            
-            // If it's a new day, reset tasks
-            if (serverData.date !== today) {
-              const newData = { date: today, tasks: {} };
-              await saveToServer(newData);
-              setCompletedTasks({});
-            } else {
-              setCompletedTasks(serverData.tasks || {});
+          // Check if storage API exists
+          if (!window.storage) {
+            throw new Error('Storage not available');
+          }
+          
+          // Load last reset date
+          const dateResult = await window.storage.get('task-tracker-date', true);
+          const savedDate = dateResult?.value || '';
+          
+          // If it's a new day, reset tasks
+          if (savedDate !== today) {
+            await window.storage.set('task-tracker-date', today, true);
+            await window.storage.set('task-tracker-tasks', JSON.stringify({}), true);
+            setCompletedTasks({});
+          } else {
+            // Load saved tasks
+            const tasksResult = await window.storage.get('task-tracker-tasks', true);
+            if (tasksResult?.value) {
+              setCompletedTasks(JSON.parse(tasksResult.value));
             }
           }
-        } catch (error) {
-          console.log('Using local fallback');
-          // Fallback to localStorage if server fails
-          const saved = localStorage.getItem('dailytasks_tasks');
-          if (saved) {
-            setCompletedTasks(JSON.parse(saved));
+          setError(null);
+        } catch (err) {
+          console.log('Storage error, using localStorage fallback:', err);
+          setError('Using local mode - tasks won\'t sync between phones');
+          
+          // Fallback to localStorage
+          const today = getTodayDate();
+          const savedDate = localStorage.getItem('task-date');
+          
+          if (savedDate !== today) {
+            localStorage.setItem('task-date', today);
+            localStorage.setItem('task-data', JSON.stringify({}));
+            setCompletedTasks({});
+          } else {
+            const saved = localStorage.getItem('task-data');
+            if (saved) {
+              setCompletedTasks(JSON.parse(saved));
+            }
           }
         }
         setLoading(false);
       };
 
-      // Save data to server
-      const saveToServer = async (data) => {
-        try {
-          await fetch('https://api.jsonbin.io/v3/b/' + BIN_ID, {
-            method: 'PUT',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Master-Key': API_KEY
-            },
-            body: JSON.stringify(data)
-          });
-        } catch (error) {
-          console.error('Save failed:', error);
-        }
-      };
-
-      // Initial load
+      // Initial load and polling
       useEffect(() => {
-        loadFromServer();
+        loadData();
         
-        // Poll for updates every 5 seconds
-        const interval = setInterval(loadFromServer, 5000);
+        // Poll for updates every 3 seconds
+        const interval = setInterval(loadData, 3000);
         
         return () => clearInterval(interval);
       }, []);
@@ -127,12 +121,16 @@
         
         setCompletedTasks(newCompletedTasks);
         
-        // Save to server
-        const today = getTodayDate();
-        await saveToServer({ date: today, tasks: newCompletedTasks });
-        
-        // Also save locally as backup
-        localStorage.setItem('dailytasks_tasks', JSON.stringify(newCompletedTasks));
+        try {
+          if (window.storage) {
+            await window.storage.set('task-tracker-tasks', JSON.stringify(newCompletedTasks), true);
+          } else {
+            localStorage.setItem('task-data', JSON.stringify(newCompletedTasks));
+          }
+        } catch (error) {
+          console.error('Error saving task:', error);
+          localStorage.setItem('task-data', JSON.stringify(newCompletedTasks));
+        }
       };
 
       const completedCount = Object.values(completedTasks).filter(Boolean).length;
@@ -155,6 +153,12 @@
               <p className="text-gray-600 mb-4">
                 {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
               </p>
+              
+              {error && (
+                <div className="mb-4 p-3 bg-yellow-100 border border-yellow-400 rounded-lg text-yellow-800 text-sm">
+                  ⚠️ {error}
+                </div>
+              )}
               
               <div className="mb-2">
                 <div className="flex justify-between text-sm text-gray-600 mb-1">
@@ -217,7 +221,7 @@
                 Tasks automatically reset at midnight
               </p>
               <p className="mt-2 text-xs text-gray-500">
-                ✨ Real-time sync: Both phones see the same tasks!
+                {!error ? '✨ Real-time sync enabled!' : '📱 Tracking locally on this device'}
               </p>
             </div>
           </div>
